@@ -1,0 +1,110 @@
+name: crawl
+
+on:
+  schedule:
+    # 每週日 02:00（台北，UTC+8）＝ 每週六 18:00 UTC
+    - cron: "0 18 * * 6"
+  workflow_dispatch:
+    inputs:
+      config:
+        description: "站台設定檔"
+        default: config/irasutoya.yaml
+      max_runtime:
+        description: "本次最多跑幾秒"
+        default: "180"
+      extra_args:
+        description: "額外參數（例如 --restart）"
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  # 已經有一個 run 在跑就直接跳過這次（不排隊、不重複執行）
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 只算「比自己早開始」的 run，避免兩個同時啟動時互相讓路
+          earlier=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow crawl.yml \
+            --status in_progress \
+            --json databaseId \
+            --jq "[.[].databaseId] | map(select(. < ${{ github.run_id }})) | length")
+          if [ "$earlier" -gt 0 ]; then
+            echo "已有 $earlier 個執行中的 run，跳過這次"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  crawl:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    # GitHub 的 job 上限是 6 小時，留時間給收尾
+    timeout-minutes: 340
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝依賴
+        run: pip install -r requirements.txt
+
+      - name: 爬取
+        run: |
+          python -m scraper crawl \
+            -c "${{ github.event.inputs.config || 'config/irasutoya.yaml' }}" \
+            -d data/images.db \
+            --max-runtime "${{ github.event.inputs.max_runtime || '18000' }}" \
+            --log-file data/crawl.log \
+            ${{ github.event.inputs.extra_args }}
+
+      # 以下步驟在爬取失敗時仍要執行（保住已抓到的資料），
+      # 但手動取消時一律不執行 —— 該次結果整批丟棄。
+      - name: 重試先前失敗的頁面
+        if: ${{ !cancelled() }}
+        run: |
+          python -m scraper retry \
+            -c "${{ github.event.inputs.config || 'config/irasutoya.yaml' }}" \
+            -d data/images.db \
+            --max-runtime 600 \
+            --log-file data/crawl.log
+
+      - name: 統計
+        if: ${{ !cancelled() }}
+        run: python -m scraper stats -d data/images.db
+
+      - name: 上傳 log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-log-${{ github.run_number }}
+          path: data/crawl.log
+          retention-days: 30
+
+      - name: 把資料庫存回 repo
+        if: ${{ !cancelled() }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/images.db
+          if git diff --cached --quiet; then
+            echo "資料庫沒有變化，不提交"
+          else
+            git commit -m "chore(data): 更新爬取結果（run #${{ github.run_number }}）"
+            git pull --rebase --autostash
+            git push
+          fi

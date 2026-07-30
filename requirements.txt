@@ -1,0 +1,7 @@
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.2
+soupsieve>=2.5
+Pillow>=10.3
+PyYAML>=6.0
+python-dateutil>=2.9

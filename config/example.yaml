@@ -1,0 +1,100 @@
+# 站台設定範本 —— 換一個網站只要複製這份改 selector，程式碼不用動。
+# 實際網址與元素等你提供後填入。
+
+name: example                     # 會存進 images.site 欄位
+
+start_urls:
+  - https://example.com/list
+
+# 不填就自動鎖在 start_urls 的網域
+allowed_domains:
+  - example.com
+
+max_items: 0                      # 0 = 不限；也可用 CLI --limit 覆寫
+
+# 圖片尺寸怎麼取：
+#   always  = 一律連線量測（最準，每張圖多一次請求）
+#   missing = HTML 沒寫 width/height 才連線量測（預設）
+#   never   = 只信 HTML
+measure_size: always
+
+# 標籤抽出來若是「A, B、C」這種一整串，用這些字元切開；不需要就拿掉
+tag_separator: ",、／/|"
+
+# ---- 速度控制 ----
+politeness:
+  delay: 2.0                      # 每次請求之間至少間隔幾秒
+  jitter: 1.0                     # 再加 0~1 秒隨機抖動
+  timeout: 20
+  retries: 3
+  backoff: 2.0                    # 重試退避倍數（429/5xx 會尊重 Retry-After）
+  respect_robots: true
+  user_agent: "Mozilla/5.0 (compatible; StockLibraryScan/0.1) metadata-only crawler"
+  headers: {}                     # 需要額外標頭（例如 Referer）時加在這
+
+# ---- 列表頁：怎麼找到詳細頁、怎麼翻頁 ----
+listing:
+  item: "div.post-list"           # 可選：先框出項目區塊，再從裡面找連結
+  item_link: "a.thumb"            # 指向詳細頁的 <a>
+  link_attr: href
+  fields_on_listing: false        # 若列表頁上就有全部欄位，設 true 就不進詳細頁
+
+  pagination:
+    # 方式一：跟著「下一頁」連結走
+    next_page: "a.next-page"
+    # 方式二：網址模板套頁碼（與 next_page 二選一）
+    # url_template: "https://example.com/list?page={page}"
+    # start: 1
+    # end: 100
+    # step: 1
+    max_pages: 0                  # 0 = 不限
+
+# ---- 詳細頁：抽哪些元素 ----
+# 每個欄位可以寫成一條規則，或一串規則（依序嘗試，第一條有值的就用），
+# 用來對付同站不同版型的頁面。
+detail:
+  item: null                      # 可選：一頁有多個項目時，先框出每個項目
+
+  fields:
+    name:
+      - selector: "h1.title"
+        attr: text
+      - selector: "meta[property='og:title']"   # 備援
+        attr: content
+
+    description:
+      - selector: "div.entry p"
+        attr: text
+      - selector: "meta[name='description']"
+        attr: content
+
+    image_url:
+      - selector: "div.entry img"
+        attr: src                 # src/href 這類屬性會自動補成絕對網址
+        multiple: false           # 一頁多張圖就設 true，每張存成一筆
+      - selector: "meta[property='og:image']"
+        attr: content
+        type: url                 # content 需明寫 type: url 才會補絕對網址
+
+    # 若 HTML 本身就有標尺寸，填這兩個可省下量測請求（measure_size: missing 時）
+    width:
+      selector: "div.entry img"
+      attr: width
+      type: int
+    height:
+      selector: "div.entry img"
+      attr: height
+      type: int
+
+    published_at:
+      - selector: "time[datetime]"
+        attr: datetime
+        type: date                # 支援 ISO 與「2026年7月30日」等寫法
+      - selector: "span.date"
+        attr: text
+        type: date
+
+    tags:
+      selector: "a[rel='tag']"
+      attr: text
+      multiple: true              # 多個標籤 → list

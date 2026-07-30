@@ -1,0 +1,41 @@
+# 端對端測試用設定：對應 tests/fixtures/site 的假站台
+name: fixture
+
+start_urls:
+  - http://127.0.0.1:8765/index.html
+
+allowed_domains:
+  - 127.0.0.1
+
+measure_size: always
+tag_separator: ",、／/|"
+
+politeness:
+  delay: 0.05
+  jitter: 0.0
+  timeout: 10
+  retries: 1
+  respect_robots: true
+
+listing:
+  item: "div.post-list"
+  item_link: "a.thumb"
+  pagination:
+    next_page: "a.next-page"
+
+detail:
+  fields:
+    name:
+      - { selector: "h1.title", attr: text }
+      - { selector: "meta[property='og:title']", attr: content }
+    description:
+      - { selector: "div.entry p", attr: text }
+      - { selector: "meta[name='description']", attr: content }
+    image_url:
+      - { selector: "div.entry img", attr: src, multiple: true }
+      - { selector: "meta[property='og:image']", attr: content, type: url }
+    published_at:
+      - { selector: "time[datetime]", attr: datetime, type: date }
+      - { selector: "span.date", attr: text, type: date }
+    tags:
+      { selector: "a[rel='tag']", attr: text, multiple: true }

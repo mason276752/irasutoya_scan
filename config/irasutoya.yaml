@@ -1,0 +1,62 @@
+# いらすとや（https://www.irasutoya.com）
+name: irasutoya
+
+start_urls:
+  - "https://www.irasutoya.com/search?updated-max=2010-06-12T10:00:00%2B09:00&max-results=24&start=77&by-date=false"
+
+allowed_domains:
+  - irasutoya.com
+
+# 圖片實際尺寸一律連線量測（HTML 沒有標尺寸）
+measure_size: always
+
+politeness:
+  delay: 2.0
+  jitter: 1.0
+  timeout: 20
+  retries: 3
+  backoff: 2.0
+  respect_robots: true
+
+listing:
+  item_link: "#Blog1 div.boxim a"
+  link_attr: href
+  pagination:
+    # 「前のページ」＝往更新的資料翻；走到最新一頁時這個連結會消失，自然停止
+    next_page: "a.blog-pager-newer-link"
+    max_pages: 0          # 0 = 不限
+
+detail:
+  # 每個「被 <a> 包起來的 <img>」就是一張圖：
+  #   多圖頁 → div.floatimg 內的 a > img
+  #   單圖頁 → div.separator 內的 a > img
+  # 文章開頭那張沒有 <a> 包的縮圖（thumbnail_*）不會被選到。
+  item: "div.post div.entry a:has(> img)"
+
+  fields:
+    # a 的 href 是原圖（s800），img 的 src 只是縮圖（s200/s400）
+    image_url:
+      selector: "."
+      attr: href
+
+    name:
+      - { selector: "img", attr: alt }
+      - { selector: "div.post div.title h2", attr: text, scope: page }  # 沒有 alt 時退回標題
+
+    # 說明、日期、標籤是整頁共用，要從整份文件抽（scope: page）
+    description:
+      selector: 'div.entry div[style*="text-align: center"]'
+      attr: text
+      scope: page
+
+    published_at:
+      selector: "div.entry-post-date span"
+      attr: text
+      type: date            # 「公開日：2010/06/12」→ 2010-06-12
+      scope: page
+
+    tags:
+      selector: "span.category a[rel='tag']"
+      attr: text
+      multiple: true
+      scope: page
