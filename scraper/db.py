@@ -1,8 +1,13 @@
 """SQLite 儲存層。
 
-標籤走正規化三表（images / tags / image_tags），因此標籤天然無序、不重複，
-且「同時具備 A 和 B」這種查詢可以走索引，不必對逗號字串做 LIKE。
-name / description 另外掛 FTS5 全文索引（優先用 trigram 分詞，對中日文子字串搜尋友善）。
+一張圖一筆，以 image_url 為唯一鍵。同一個圖檔常出現在多篇文章裡，各篇給的
+名稱與說明不同，所以「名稱／說明／來源頁」跟標籤一樣是多值的，掛在 image_sources。
+
+    images         一張圖一筆（尺寸、最早公開日期）
+    image_sources  這張圖在每個來源頁的名稱與說明
+    tags/image_tags 標籤（多對多，天然無序不重複）
+
+名稱與說明另外掛 FTS5 全文索引（優先用 trigram 分詞，對中日文子字串搜尋友善）。
 """
 
 from __future__ import annotations
@@ -13,23 +18,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS images (
     id           INTEGER PRIMARY KEY,
     site         TEXT    NOT NULL,
-    page_url     TEXT    NOT NULL,
-    image_url    TEXT    NOT NULL,
-    name         TEXT,
-    description  TEXT,
+    image_url    TEXT    NOT NULL UNIQUE,
     width        INTEGER,
     height       INTEGER,
-    published_at TEXT,               -- ISO 8601，無時間就存 YYYY-MM-DD
-    fetched_at   TEXT    NOT NULL,
-    UNIQUE (page_url, image_url)
+    published_at TEXT,               -- 各來源頁裡最早的公開日期
+    fetched_at   TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_images_site      ON images (site);
 CREATE INDEX IF NOT EXISTS idx_images_published ON images (published_at);
-CREATE INDEX IF NOT EXISTS idx_images_name      ON images (name);
+
+-- 同一張圖可能出現在多篇文章，每篇給的名稱／說明不同，全部保留
+CREATE TABLE IF NOT EXISTS image_sources (
+    image_id     INTEGER NOT NULL REFERENCES images (id) ON DELETE CASCADE,
+    page_url     TEXT    NOT NULL,
+    name         TEXT,
+    description  TEXT,
+    published_at TEXT,
+    PRIMARY KEY (image_id, page_url)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_image_sources_name ON image_sources (name);
 
 CREATE TABLE IF NOT EXISTS tags (
     id   INTEGER PRIMARY KEY,
@@ -65,25 +78,12 @@ CREATE TABLE IF NOT EXISTS crawl_cursor (
 );
 """
 
+# 名稱與說明分散在多筆 image_sources，沒辦法用 external content 直接對映，
+# 所以用一般的 FTS5 表，rowid 對齊 images.id，寫入時把該圖的所有名稱／說明串起來。
 FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5 (
-    name, description,
-    content='images', content_rowid='id', tokenize={tokenize}
+    names, descriptions, tokenize={tokenize}
 );
-CREATE TRIGGER IF NOT EXISTS images_ai AFTER INSERT ON images BEGIN
-    INSERT INTO images_fts (rowid, name, description)
-    VALUES (new.id, new.name, new.description);
-END;
-CREATE TRIGGER IF NOT EXISTS images_ad AFTER DELETE ON images BEGIN
-    INSERT INTO images_fts (images_fts, rowid, name, description)
-    VALUES ('delete', old.id, old.name, old.description);
-END;
-CREATE TRIGGER IF NOT EXISTS images_au AFTER UPDATE ON images BEGIN
-    INSERT INTO images_fts (images_fts, rowid, name, description)
-    VALUES ('delete', old.id, old.name, old.description);
-    INSERT INTO images_fts (rowid, name, description)
-    VALUES (new.id, new.name, new.description);
-END;
 """
 
 
@@ -104,6 +104,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _uniq(values: Iterable[str | None]) -> list[str]:
+    """保序去重，順便濾掉空值。"""
+    return list(dict.fromkeys(v for v in values if v))
+
+
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -121,62 +126,101 @@ class Database:
     def _migrate(self) -> None:
         self.conn.executescript(SCHEMA)
         self.has_fts = self._try_fts()
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
 
     def _try_fts(self) -> bool:
         # trigram 需要 SQLite >= 3.34；不支援就退回 unicode61
+        existed = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='images_fts'"
+        ).fetchone()
         for tokenize in ("'trigram'", "'unicode61 remove_diacritics 2'"):
             try:
                 self.conn.executescript(FTS_SCHEMA.format(tokenize=tokenize))
+                self.has_fts = True  # _index_image 會看這個旗標
+                if not existed:
+                    self._rebuild_fts()
                 return True
             except sqlite3.OperationalError:
                 continue
         return False
 
+    def _rebuild_fts(self) -> None:
+        """全量重建索引（剛升級或剛建立索引時用）。"""
+        self.conn.execute("DELETE FROM images_fts")
+        rows = self.conn.execute("SELECT id FROM images").fetchall()
+        for row in rows:
+            self._index_image(row["id"])
+
+    def _index_image(self, image_id: int) -> None:
+        """把這張圖的所有名稱與說明寫進全文索引。"""
+        if not self.has_fts:
+            return
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(GROUP_CONCAT(name, ' '), '')        AS names,
+                   COALESCE(GROUP_CONCAT(description, ' '), '') AS descriptions
+            FROM image_sources WHERE image_id = ?
+            """,
+            (image_id,),
+        ).fetchone()
+        self.conn.execute("DELETE FROM images_fts WHERE rowid = ?", (image_id,))
+        self.conn.execute(
+            "INSERT INTO images_fts (rowid, names, descriptions) VALUES (?, ?, ?)",
+            (image_id, row["names"], row["descriptions"]),
+        )
+
     # ---------- 寫入 ----------
 
     def upsert_image(self, rec: ImageRecord) -> int:
-        """以 (page_url, image_url) 為鍵寫入或更新，並同步標籤。"""
+        """以 image_url 為鍵寫入或更新，並掛上這一頁的名稱／說明與標籤。"""
         cur = self.conn.execute(
             """
             INSERT INTO images
-                (site, page_url, image_url, name, description,
-                 width, height, published_at, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (page_url, image_url) DO UPDATE SET
+                (site, image_url, width, height, published_at, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (image_url) DO UPDATE SET
                 site         = excluded.site,
-                name         = excluded.name,
-                description  = excluded.description,
                 -- 這次沒量到尺寸就保留舊值，不要用 NULL 蓋掉
                 width        = COALESCE(excluded.width,  images.width),
                 height       = COALESCE(excluded.height, images.height),
-                published_at = COALESCE(excluded.published_at, images.published_at),
+                -- 多個來源頁時取最早的公開日期
+                published_at = MIN(
+                    COALESCE(excluded.published_at, images.published_at),
+                    COALESCE(images.published_at, excluded.published_at)
+                ),
                 fetched_at   = excluded.fetched_at
             RETURNING id
             """,
-            (
-                rec.site,
-                rec.page_url,
-                rec.image_url,
-                rec.name,
-                rec.description,
-                rec.width,
-                rec.height,
-                rec.published_at,
-                _now(),
-            ),
+            (rec.site, rec.image_url, rec.width, rec.height, rec.published_at, _now()),
         )
         image_id = int(cur.fetchone()[0])
-        self._set_tags(image_id, rec.tags)
+
+        # 同一張圖在不同文章有不同名稱／說明，各自留一筆
+        self.conn.execute(
+            """
+            INSERT INTO image_sources (image_id, page_url, name, description, published_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (image_id, page_url) DO UPDATE SET
+                name         = COALESCE(excluded.name, image_sources.name),
+                description  = COALESCE(excluded.description, image_sources.description),
+                published_at = COALESCE(excluded.published_at, image_sources.published_at)
+            """,
+            (image_id, rec.page_url, rec.name, rec.description, rec.published_at),
+        )
+
+        self._add_tags(image_id, rec.tags)
+        self._index_image(image_id)
         return image_id
 
-    def _set_tags(self, image_id: int, tags: Iterable[str]) -> None:
+    def _add_tags(self, image_id: int, tags: Iterable[str]) -> None:
+        """標籤取聯集，只增不減。
+
+        一張圖有多個來源頁，各頁標籤不同，這裡是逐頁寫入的，若「以最新一次為準」
+        就會把其他來源頁的標籤刪掉。抽取失敗時也一樣不該清空既有資料。
+        """
         clean = sorted({t.strip() for t in tags if t and t.strip()})
         if not clean:
-            # 這次抽不到標籤時保留既有的，不要清空。
-            # 「抽取失敗」（版型變動、頁面殘缺、重試時的暫時性問題）遠比
-            # 「標籤真的被站方拿掉」常見，清空是不可逆的資料遺失。
-            # 代價是站方真的移除標籤時不會同步，這個取捨偏向不遺失。
             return
 
         self.conn.executemany(
@@ -185,17 +229,9 @@ class Database:
         rows = self.conn.execute(
             f"SELECT id FROM tags WHERE name IN ({','.join('?' * len(clean))})", clean
         ).fetchall()
-        tag_ids = [r["id"] for r in rows]
-
-        # 先刪掉這次不再出現的關聯，再補上新的（標籤集合以最新一次抓取為準）
-        self.conn.execute(
-            f"DELETE FROM image_tags WHERE image_id = ? "
-            f"AND tag_id NOT IN ({','.join('?' * len(tag_ids))})",
-            [image_id, *tag_ids],
-        )
         self.conn.executemany(
             "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
-            [(image_id, tid) for tid in tag_ids],
+            [(image_id, r["id"]) for r in rows],
         )
 
     def mark(self, url: str, site: str, status: str, error: str | None = None) -> None:
@@ -287,7 +323,11 @@ class Database:
                 # 非 raw 模式把整串包成 phrase，避免 - " * 等字元被當成 FTS 語法
                 params.append(query if raw_query else '"' + query.replace('"', '""') + '"')
             else:
-                where.append("(i.name LIKE ? OR i.description LIKE ?)")
+                # 名稱與說明都在 image_sources，短查詢用 EXISTS 掃來源表
+                where.append(
+                    "EXISTS (SELECT 1 FROM image_sources s WHERE s.image_id = i.id"
+                    " AND (s.name LIKE ? OR s.description LIKE ?))"
+                )
                 params.extend([f"%{query}%"] * 2)
 
         if site:
@@ -314,12 +354,35 @@ class Database:
         params.extend([limit, offset])
 
         rows = self.conn.execute(sql, params).fetchall()
-        results = []
-        for row in rows:
-            item = dict(row)
-            item["tags"] = self.tags_of(item["id"])
-            results.append(item)
-        return results
+        return [self._hydrate(dict(row)) for row in rows]
+
+    def _hydrate(self, item: dict[str, Any]) -> dict[str, Any]:
+        """補上多值欄位。
+
+        names / descriptions / page_urls 都是清單；同時提供 name / description /
+        page_url 這幾個單值欄位（取第一筆）方便只要顯示一個的地方直接用。
+        """
+        sources = self.sources_of(item["id"])
+        item["sources"] = sources
+        item["names"] = _uniq(s["name"] for s in sources)
+        item["descriptions"] = _uniq(s["description"] for s in sources)
+        item["page_urls"] = [s["page_url"] for s in sources]
+        item["name"] = item["names"][0] if item["names"] else None
+        item["description"] = item["descriptions"][0] if item["descriptions"] else None
+        item["page_url"] = item["page_urls"][0] if item["page_urls"] else None
+        item["tags"] = self.tags_of(item["id"])
+        return item
+
+    def sources_of(self, image_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT page_url, name, description, published_at
+            FROM image_sources WHERE image_id = ?
+            ORDER BY published_at, page_url
+            """,
+            (image_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def tags_of(self, image_id: int) -> list[str]:
         rows = self.conn.execute(
@@ -344,12 +407,19 @@ class Database:
 
     def images_without_size(self, site: str | None = None, limit: int = 0) -> list[dict[str, Any]]:
         """尺寸沒量到的圖（例如量測當下被 429 擋掉）。"""
-        sql = "SELECT id, image_url, page_url FROM images WHERE width IS NULL OR height IS NULL"
+        # 量測要帶 Referer，所以順便撈一個來源頁
+        sql = """
+            SELECT i.id, i.image_url,
+                   (SELECT s.page_url FROM image_sources s
+                    WHERE s.image_id = i.id LIMIT 1) AS page_url
+            FROM images i
+            WHERE i.width IS NULL OR i.height IS NULL
+        """
         params: list[Any] = []
         if site:
-            sql += " AND site = ?"
+            sql += " AND i.site = ?"
             params.append(site)
-        sql += " ORDER BY id"
+        sql += " ORDER BY i.id"
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
@@ -364,6 +434,11 @@ class Database:
         one = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
         return {
             "images": one("SELECT COUNT(*) FROM images"),
+            "sources": one("SELECT COUNT(*) FROM image_sources"),
+            "multi_source": one(
+                "SELECT COUNT(*) FROM (SELECT image_id FROM image_sources"
+                " GROUP BY image_id HAVING COUNT(*) > 1)"
+            ),
             "tags": one("SELECT COUNT(*) FROM tags"),
             "with_size": one("SELECT COUNT(*) FROM images WHERE width IS NOT NULL"),
             "pages_done": one("SELECT COUNT(*) FROM crawl_state WHERE status = 'done'"),

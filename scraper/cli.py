@@ -169,8 +169,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     else:
         for row in rows:
             size = f"{row['width']}x{row['height']}" if row["width"] else "尺寸未知"
-            print(f"[{row['id']}] {row['name'] or '(無名稱)'}  {size}  {row['published_at'] or ''}")
+            names = row["names"] or ["(無名稱)"]
+            print(f"[{row['id']}] {names[0]}  {size}  {row['published_at'] or ''}")
+            for alias in names[1:]:
+                print(f"    別名：{alias}")
             print(f"    {row['image_url']}")
+            if len(row["page_urls"]) > 1:
+                print(f"    來源：{len(row['page_urls'])} 篇文章")
             if row["tags"]:
                 print(f"    標籤：{'、'.join(row['tags'])}")
         print(f"\n共 {len(rows)} 筆")
@@ -182,6 +187,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
     db = Database(args.db)
     stats = db.stats()
     print(f"圖片：{stats['images']}")
+    print(f"來源頁筆數：{stats['sources']}（其中 {stats['multi_source']} 張圖出現在多篇文章）")
     print(f"標籤：{stats['tags']}")
     print(f"有尺寸：{stats['with_size']}")
     print(f"已完成頁面：{stats['pages_done']}，無圖片頁面：{stats['pages_empty']}，"
@@ -208,16 +214,28 @@ def cmd_export(args: argparse.Namespace) -> int:
             json.dump(rows, out, ensure_ascii=False, indent=2)
             out.write("\n")
         else:
+            # 多值欄位用 | 串接。names / descriptions / page_urls 依來源頁排序，
+            # 三者索引一一對應（第 n 個名稱配第 n 個說明與第 n 個來源頁），
+            # 所以這裡不能各自去重。
             writer = csv.writer(out)
             writer.writerow(
-                ["id", "site", "name", "description", "width", "height",
-                 "image_url", "page_url", "published_at", "tags"]
+                ["id", "site", "image_url", "width", "height", "published_at",
+                 "name", "description", "page_url",
+                 "names", "descriptions", "page_urls", "source_count", "tags"]
             )
             for r in rows:
+                srcs = r["sources"]
                 writer.writerow([
-                    r["id"], r["site"], r["name"], r["description"],
-                    r["width"], r["height"], r["image_url"], r["page_url"],
-                    r["published_at"], "|".join(r["tags"]),
+                    r["id"], r["site"], r["image_url"],
+                    r["width"], r["height"], r["published_at"],
+                    srcs[0]["name"] if srcs else None,
+                    srcs[0]["description"] if srcs else None,
+                    srcs[0]["page_url"] if srcs else None,
+                    "|".join(s["name"] or "" for s in srcs),
+                    "|".join(s["description"] or "" for s in srcs),
+                    "|".join(s["page_url"] for s in srcs),
+                    len(srcs),
+                    "|".join(r["tags"]),
                 ])
     finally:
         if args.out:
