@@ -160,6 +160,30 @@ GROUP BY i.id HAVING COUNT(DISTINCT t.name) = 2;
 > 資料庫是二進位檔，每次提交都會讓 repo 長大。如果累積後太大，改成用
 > `actions/cache` 或 Release assets 保存會比較好。
 
+## GitHub Pages
+
+看圖頁會自動發布成網站，網址是 `https://<帳號>.github.io/<repo>/`。
+
+**第一次要先在 repo 設定裡開啟**：Settings → Pages → Build and deployment →
+Source 選 **GitHub Actions**（不是 Deploy from a branch）。沒設定的話部署那一步會失敗。
+
+站台只包含看圖需要的三個檔案，資料庫和 log 不會上傳：
+
+```
+index.html      看圖頁
+images.json     資料（頁面用 fetch 讀它）
+images.csv      給你自己下載用
+```
+
+兩個 workflow 都會部署：
+
+- [crawl.yml](.github/workflows/crawl.yml) — 每週爬完後自動部署最新資料
+- [pages.yml](.github/workflows/pages.yml) — 改了 `scraper/viewer.html` 之後 push 就重新部署，
+  不重爬；也可以手動觸發。它用的是 repo 裡現有的 `data/images.db`
+
+> 資料量大時 `images.json` 會跟著變大（約每千張 600KB）。Pages 傳輸有 gzip，
+> 實際下載量約為三分之一，但圖片數量上萬之後首次載入仍會有明顯等待。
+
 ## 測試
 
 `tests/` 底下有一個自製的假站台，可以在不打真站的情況下驗證整條流程：

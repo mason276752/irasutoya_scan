@@ -11,7 +11,7 @@ on:
         default: config/irasutoya.yaml
       max_runtime:
         description: "本次最多跑幾秒"
-        default: "180"
+        default: "18000"
       extra_args:
         description: "額外參數（例如 --restart）"
         default: ""

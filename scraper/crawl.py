@@ -119,6 +119,33 @@ class Crawler:
             for url, reason in self.failed:
                 log.warning("    - %s\n        原因：%s", url, reason)
 
+        if self.dry_run:
+            return
+
+        # 游標只會往前走，越過的列表頁不會再訪問，所以待處理的頁面必須靠 retry 補。
+        # 把資料庫裡累積的數量講清楚，避免問題被埋在某一次的 log 裡。
+        pending_error = len(self.db.pages_by_status("error", self.cfg.name))
+        pending_empty = len(self.db.pages_by_status("empty", self.cfg.name))
+        if pending_error:
+            log.warning(
+                "資料庫累積 %d 個 error 頁面，用 `retry` 補：\n"
+                "    python -m scraper retry -c <設定檔> -d <資料庫>",
+                pending_error,
+            )
+        missing_size = len(self.db.images_without_size(self.cfg.name))
+        if missing_size:
+            log.warning(
+                "有 %d 張圖沒量到尺寸（量測當下可能被 429 擋掉），用 `remeasure` 補：\n"
+                "    python -m scraper remeasure -c <設定檔> -d <資料庫>",
+                missing_size,
+            )
+        if pending_empty:
+            log.info(
+                "資料庫累積 %d 個 empty 頁面（抓過但沒有圖）。多數是公告頁之類，"
+                "但版型變動或頁面殘缺也會落到這裡，偶爾用 `retry --status empty` 複查",
+                pending_empty,
+            )
+
     # ---------- 列表頁 ----------
 
     def _check_budget(self) -> None:
@@ -352,10 +379,12 @@ class Crawler:
             self.saved += 1
             count += 1
             if self.limit and self.saved >= self.limit:
+                # 這一頁還沒處理完就中斷，所以**不能**標記成 done
+                # ——標記了下次就會跳過，該頁剩下的圖會永久漏掉。
+                # 已寫入的圖先 commit 保住，整頁留待下次重抓（upsert 不會產生重複）。
                 if not self.dry_run:
-                    self.db.mark(page_url, self.cfg.name, "done")
                     self.db.commit()
-                raise _Budget(f"已達筆數上限 {self.limit}")
+                raise _Budget(f"已達筆數上限 {self.limit}（這一頁未完成，下次會重抓）")
 
         return count
 

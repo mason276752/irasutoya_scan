@@ -37,25 +37,17 @@ class RateLimiter:
         self.delay = max(0.0, delay)
         self.jitter = max(0.0, jitter)
         self._last = 0.0
-        self._not_before = 0.0  # 冷卻結束的時間點
         self._lock = threading.Lock()
 
     def wait(self) -> None:
-        if not self.delay and not self.jitter and not self._not_before:
+        if not self.delay and not self.jitter:
             return
         with self._lock:
             gap = self.delay + random.uniform(0.0, self.jitter)
-            # 兩個條件取晚的：距上次請求要夠久，且要等冷卻結束
-            target = max(self._last + gap, self._not_before)
-            now = time.monotonic()
-            if now < target:
-                time.sleep(target - now)
+            elapsed = time.monotonic() - self._last
+            if elapsed < gap:
+                time.sleep(gap - elapsed)
             self._last = time.monotonic()
-
-    def cooldown(self, seconds: float) -> None:
-        """全域暫停：所有使用這個限速器的執行緒都會等到冷卻結束。"""
-        with self._lock:
-            self._not_before = max(self._not_before, time.monotonic() + seconds)
 
 
 class Fetcher:
@@ -71,6 +63,11 @@ class Fetcher:
         self._local = threading.local()  # 每個執行緒各自的 Session
         self._robots: dict[str, RobotFileParser | None] = {}
         self._robots_lock = threading.Lock()
+        # 被 429 擋下時的冷卻，以 host 為單位：
+        # 限流是伺服器層級的，同一台主機上的網頁與圖片必須一起停，
+        # 但不該波及其他主機（例如圖片放在另一個 CDN 的情況）。
+        self._cooldown: dict[str, float] = {}
+        self._cooldown_lock = threading.Lock()
 
     @property
     def session(self) -> requests.Session:
@@ -111,6 +108,25 @@ class Fetcher:
             log.warning("讀不到 robots.txt（%s）：%s", url, exc)
             return None
 
+    # ---------- 429 冷卻（以 host 為單位）----------
+
+    def set_cooldown(self, url: str, seconds: float) -> None:
+        host = urlparse(url).hostname or ""
+        with self._cooldown_lock:
+            until = max(self._cooldown.get(host, 0.0), time.monotonic() + seconds)
+            self._cooldown[host] = until
+
+    def wait_cooldown(self, url: str) -> None:
+        """這台主機若在冷卻中就等到結束；分段睡，避免關機時卡住太久。"""
+        host = urlparse(url).hostname or ""
+        while True:
+            with self._cooldown_lock:
+                until = self._cooldown.get(host, 0.0)
+            remain = until - time.monotonic()
+            if remain <= 0:
+                return
+            time.sleep(min(remain, 2.0))
+
     # ---------- 請求 ----------
 
     def _request(
@@ -120,6 +136,7 @@ class Fetcher:
         limiter = limiter or self.limiter
         last_exc: Exception | None = None
         for attempt in range(self.p.retries + 1):
+            self.wait_cooldown(url)  # 這台主機還在 429 冷卻中就先等
             limiter.wait()
             try:
                 resp = self.session.request(
@@ -140,11 +157,14 @@ class Fetcher:
                     break
 
                 if resp.status_code == 429:
-                    # 被限流：整條通道一起冷卻，並行中的請求也會停下來，
-                    # 不用自己 sleep —— 下一輪的 limiter.wait() 會等滿冷卻時間
+                    # 被限流：讓整台主機冷卻，網頁與並行中的圖片請求都會停下來。
+                    # 不用自己 sleep —— 下一輪開頭的 wait_cooldown 會等滿
                     wait = max(server_wait, self.p.too_many_requests_wait)
-                    limiter.cooldown(wait)
-                    log.warning("HTTP 429（%s），暫停 %.0f 秒後重試", url, wait)
+                    self.set_cooldown(url, wait)
+                    log.warning(
+                        "HTTP 429（%s），%s 全站暫停 %.0f 秒後重試",
+                        url, urlparse(url).hostname, wait,
+                    )
                 else:
                     wait = server_wait or self.p.backoff**attempt
                     log.warning("HTTP %d（%s），%.1fs 後重試", resp.status_code, url, wait)

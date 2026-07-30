@@ -72,17 +72,62 @@ def cmd_crawl(args: argparse.Namespace) -> int:
 def cmd_retry(args: argparse.Namespace) -> int:
     cfg = SiteConfig.load(args.config)
     db = Database(args.db)
-    urls = [row["url"] for row in db.pages_by_status("error", cfg.name)]
+
+    statuses = ["error", "empty"] if args.status == "all" else [args.status]
+    urls: list[str] = []
+    for status in statuses:
+        found = [row["url"] for row in db.pages_by_status(status, cfg.name)]
+        if found:
+            logging.info("%s 頁面：%d 個", status, len(found))
+        urls.extend(found)
+
     if not urls:
         logging.info("沒有需要重試的頁面")
         db.close()
         return 0
 
-    logging.info("重試 %d 個失敗頁面", len(urls))
-    crawler = Crawler(cfg, db, limit=args.limit or 0, max_runtime=args.max_runtime or 0)
+    logging.info("重試 %d 個頁面", len(urls))
+    # 這些頁面已有狀態記錄，要 force 才不會被 is_done 擋掉
+    crawler = Crawler(cfg, db, limit=args.limit or 0,
+                      max_runtime=args.max_runtime or 0, force=True)
     crawler.crawl_urls(urls)
     db.close()
     return 0 if crawler.errors == 0 else 1
+
+
+def cmd_remeasure(args: argparse.Namespace) -> int:
+    """補量尺寸：量測當下被 429 或網路問題擋掉的圖，之後不會有任何流程回頭處理，
+    所以獨立成一個指令。"""
+    cfg = SiteConfig.load(args.config)
+    db = Database(args.db)
+    rows = db.images_without_size(cfg.name, args.limit)
+    if not rows:
+        logging.info("沒有缺尺寸的圖片")
+        db.close()
+        return 0
+
+    logging.info("補量 %d 張圖的尺寸", len(rows))
+    fetcher = Fetcher(cfg.politeness)
+    fixed = failed = 0
+    # 依來源頁分組，Referer 才能帶對
+    by_page: dict[str, list[dict]] = {}
+    for row in rows:
+        by_page.setdefault(row["page_url"], []).append(row)
+
+    for page_url, items in by_page.items():
+        sizes = fetcher.image_sizes([i["image_url"] for i in items], referer=page_url)
+        for item in items:
+            size = sizes.get(item["image_url"])
+            if size:
+                db.update_size(item["id"], size[0], size[1])
+                fixed += 1
+            else:
+                failed += 1
+        db.commit()
+
+    logging.info("補量完成：成功 %d 張，仍然失敗 %d 張", fixed, failed)
+    db.close()
+    return 0
 
 
 def cmd_errors(args: argparse.Namespace) -> int:
@@ -216,13 +261,22 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--log-file", help="同時把 log 寫到檔案")
     c.set_defaults(func=cmd_crawl)
 
-    r = sub.add_parser("retry", help="重跑先前失敗（error）的頁面")
+    r = sub.add_parser("retry", help="重跑先前失敗（error）或沒抓到圖（empty）的頁面")
     r.add_argument("-c", "--config", required=True)
     r.add_argument("-d", "--db", default="data/images.db")
+    r.add_argument("--status", choices=["error", "empty", "all"], default="error",
+                   help="要重試哪種狀態：error（預設）／empty（曾經抽不到圖）／all")
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--max-runtime", type=float, default=None)
     r.add_argument("--log-file")
     r.set_defaults(func=cmd_retry)
+
+    rm = sub.add_parser("remeasure", help="補量尺寸沒抓到的圖片（例如量測時被 429 擋掉）")
+    rm.add_argument("-c", "--config", required=True)
+    rm.add_argument("-d", "--db", default="data/images.db")
+    rm.add_argument("--limit", type=int, default=0, help="這次最多補幾張")
+    rm.add_argument("--log-file")
+    rm.set_defaults(func=cmd_remeasure)
 
     er = sub.add_parser("errors", help="列出失敗／無圖片的頁面")
     er.add_argument("-d", "--db", default="data/images.db")

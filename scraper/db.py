@@ -341,6 +341,24 @@ class Database:
         sql += " ORDER BY updated_at DESC"
         return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
+    def images_without_size(self, site: str | None = None, limit: int = 0) -> list[dict[str, Any]]:
+        """尺寸沒量到的圖（例如量測當下被 429 擋掉）。"""
+        sql = "SELECT id, image_url, page_url FROM images WHERE width IS NULL OR height IS NULL"
+        params: list[Any] = []
+        if site:
+            sql += " AND site = ?"
+            params.append(site)
+        sql += " ORDER BY id"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def update_size(self, image_id: int, width: int, height: int) -> None:
+        self.conn.execute(
+            "UPDATE images SET width = ?, height = ? WHERE id = ?", (width, height, image_id)
+        )
+
     def stats(self) -> dict[str, Any]:
         one = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
         return {
