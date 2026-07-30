@@ -8,7 +8,9 @@ from __future__ import annotations
 import io
 import logging
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -25,34 +27,51 @@ PROBE_CHUNK = 8 * 1024
 
 
 class RateLimiter:
-    """確保任兩次請求之間至少間隔 delay 秒，另加 0~jitter 的隨機抖動。"""
+    """確保任兩次請求之間至少間隔 delay 秒，另加 0~jitter 的隨機抖動。
+
+    圖片量測是多執行緒的，所以整段等待都在鎖內，讓間隔對所有執行緒一致生效。
+    delay 與 jitter 都是 0 時完全不鎖，避免白白序列化。
+    """
 
     def __init__(self, delay: float, jitter: float = 0.0):
         self.delay = max(0.0, delay)
         self.jitter = max(0.0, jitter)
         self._last = 0.0
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
-        target = self.delay + random.uniform(0.0, self.jitter)
-        elapsed = time.monotonic() - self._last
-        if elapsed < target:
-            time.sleep(target - elapsed)
-        self._last = time.monotonic()
+        if not self.delay and not self.jitter:
+            return
+        with self._lock:
+            target = self.delay + random.uniform(0.0, self.jitter)
+            elapsed = time.monotonic() - self._last
+            if elapsed < target:
+                time.sleep(target - elapsed)
+            self._last = time.monotonic()
 
 
 class Fetcher:
     def __init__(self, politeness: Politeness):
         self.p = politeness
-        self.limiter = RateLimiter(politeness.delay, politeness.jitter)
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": politeness.user_agent,
-                "Accept-Language": "ja,zh-TW;q=0.9,en;q=0.8",
-                **politeness.headers,
-            }
-        )
+        self.limiter = RateLimiter(politeness.delay, politeness.jitter)  # 網頁
+        self.image_limiter = RateLimiter(politeness.image_delay)  # 圖片
+        self._headers = {
+            "User-Agent": politeness.user_agent,
+            "Accept-Language": "ja,zh-TW;q=0.9,en;q=0.8",
+            **politeness.headers,
+        }
+        self._local = threading.local()  # 每個執行緒各自的 Session
         self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots_lock = threading.Lock()
+
+    @property
+    def session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(self._headers)
+            self._local.session = session
+        return session
 
     # ---------- robots ----------
 
@@ -61,9 +80,10 @@ class Fetcher:
             return True
         parsed = urlparse(url)
         root = f"{parsed.scheme}://{parsed.netloc}"
-        if root not in self._robots:
-            self._robots[root] = self._load_robots(root)
-        rp = self._robots[root]
+        with self._robots_lock:  # 多執行緒量測圖片時，同一個 host 只載入一次
+            if root not in self._robots:
+                self._robots[root] = self._load_robots(root)
+            rp = self._robots[root]
         if rp is None:  # 拿不到 robots.txt 就當作沒有限制
             return True
         return rp.can_fetch(self.p.user_agent, url)
@@ -85,11 +105,14 @@ class Fetcher:
 
     # ---------- 請求 ----------
 
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _request(
+        self, method: str, url: str, limiter: RateLimiter | None = None, **kwargs
+    ) -> requests.Response:
         """帶重試與指數退避；429/503 會尊重 Retry-After。"""
+        limiter = limiter or self.limiter
         last_exc: Exception | None = None
         for attempt in range(self.p.retries + 1):
-            self.limiter.wait()
+            limiter.wait()
             try:
                 resp = self.session.request(
                     method, url, timeout=self.p.timeout, **kwargs
@@ -126,6 +149,21 @@ class Fetcher:
 
     # ---------- 圖片尺寸 ----------
 
+    def image_sizes(
+        self, urls: list[str], referer: str | None = None
+    ) -> dict[str, tuple[int, int] | None]:
+        """並行量測多張圖的尺寸（同時最多 image_concurrency 張）。
+
+        只有圖片走並行；網頁一律由呼叫端序列取得。
+        """
+        workers = min(self.p.image_concurrency, len(urls))
+        if workers <= 1:
+            return {url: self.image_size(url, referer) for url in urls}
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="imgsize") as pool:
+            results = pool.map(lambda u: self.image_size(u, referer), urls)
+            return dict(zip(urls, results))
+
     def image_size(self, url: str, referer: str | None = None) -> tuple[int, int] | None:
         """實際連線讀圖片，讀到能判斷尺寸就中斷，不會下載整張圖。"""
         if not self.allowed(url):
@@ -133,7 +171,9 @@ class Fetcher:
             return None
         headers = {"Referer": referer} if referer else {}
         try:
-            resp = self._request("GET", url, headers=headers, stream=True)
+            resp = self._request(
+                "GET", url, limiter=self.image_limiter, headers=headers, stream=True
+            )
         except Exception as exc:
             log.warning("量測尺寸失敗（%s）：%s", url, exc)
             return None

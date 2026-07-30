@@ -198,9 +198,7 @@ class Crawler:
                 if not roots:
                     log.info("列表頁沒有項目，停止：%s", page_url)
                     return
-                for root in roots:
-                    data = extract_item(root, self.cfg.detail.fields, page_url, page_root=soup)
-                    self._save(page_url, data)
+                self._process_items(page_url, roots, soup, label="列表頁項目")
                 continue
 
             if not listing.item_link:
@@ -240,10 +238,7 @@ class Crawler:
         if not roots:
             log.warning("詳細頁找不到項目區塊：%s", url)
 
-        got = 0
-        for root in roots:
-            data = extract_item(root, self.cfg.detail.fields, url, page_root=soup)
-            got += self._save(url, data)
+        got = self._process_items(url, roots, soup, label="詳細頁")
 
         if not got:
             # 抽不到圖片（公告頁、隱私權頁之類）不算失敗，記成 empty 並視同處理完，
@@ -258,31 +253,80 @@ class Crawler:
 
     # ---------- 存檔 ----------
 
-    def _save(self, page_url: str, data: dict[str, Any]) -> int:
+    def _process_items(self, page_url: str, roots: list, page_soup, label: str = "頁面") -> int:
+        """一個頁面上的所有項目：先全部抽好欄位，再一次並行量測所有圖片尺寸，最後寫入。
+
+        量測批次要放在頁面層級 —— 設定檔常把「每張圖」當成一個 item
+        （例如 detail.item 指到 <a>），若在 item 內量測，每次只有一張圖，並行等於沒開。
+        """
+        prepared = [
+            self._prepare(page_url, extract_item(root, self.cfg.detail.fields, page_url, page_soup))
+            for root in roots
+        ]
+        prepared = [p for p in prepared if p is not None]
+
+        title = page_soup.title.get_text(strip=True) if page_soup.title else "(無標題)"
+        total = sum(len(p["urls"]) for p in prepared)
+        log.info("%s %s → %d 張圖\n           %s", label, title, total, page_url)
+
+        if not prepared:
+            return 0
+
+        # 跨項目收集待量測的圖，保序去重後一次打完
+        need = list(dict.fromkeys(url for item in prepared for url in item["need_measure"]))
+        sizes = self.fetcher.image_sizes(need, referer=page_url) if need else {}
+        if need:
+            ok = sum(1 for v in sizes.values() if v)
+            log.debug("量測 %d 張圖（成功 %d）：%s", len(need), ok, page_url)
+
+        return sum(self._persist(page_url, item, sizes) for item in prepared)
+
+    def _prepare(self, page_url: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """抽好的欄位 → 待寫入的資料，並算出哪些圖需要連線量測。"""
         image_urls = _as_list(data.get("image_url"))
         if not image_urls:
             log.warning("抽不到 image_url：%s", page_url)
-            return 0
+            return None
 
-        name = _as_text(data.get("name"))
-        description = _as_text(data.get("description"))
-        published_at = _as_text(data.get("published_at"))
-        tags = self._normalize_tags(data.get("tags"))
+        valid: list[str] = []
+        for image_url in image_urls:
+            if image_url.lower().startswith(("http://", "https://")):
+                valid.append(image_url)
+            else:
+                log.warning("略過非 http 圖片網址：%s", image_url)
+        if not valid:
+            return None
+
         html_w = _as_int(data.get("width"))
         html_h = _as_int(data.get("height"))
+        mode = self.cfg.measure_size
+        need = valid if mode == "always" or (mode == "missing" and not (html_w and html_h)) else []
+
+        return {
+            "urls": valid,
+            "need_measure": need,
+            "name": _as_text(data.get("name")),
+            "description": _as_text(data.get("description")),
+            "published_at": _as_text(data.get("published_at")),
+            "tags": self._normalize_tags(data.get("tags")),
+            "width": html_w,
+            "height": html_h,
+        }
+
+    def _persist(
+        self, page_url: str, item: dict[str, Any], sizes: dict[str, tuple[int, int] | None]
+    ) -> int:
+        name = item["name"]
+        description = item["description"]
+        published_at = item["published_at"]
+        tags = item["tags"]
 
         count = 0
-        for image_url in image_urls:
-            if not image_url.lower().startswith(("http://", "https://")):
-                log.warning("略過非 http 圖片網址：%s", image_url)
-                continue
-
-            width, height = html_w, html_h
-            mode = self.cfg.measure_size
-            if mode == "always" or (mode == "missing" and not (width and height)):
-                size = self.fetcher.image_size(image_url, referer=page_url)
-                if size:
-                    width, height = size
+        for image_url in item["urls"]:
+            width, height = item["width"], item["height"]
+            measured = sizes.get(image_url)
+            if measured:
+                width, height = measured
 
             rec = ImageRecord(
                 site=self.cfg.name,

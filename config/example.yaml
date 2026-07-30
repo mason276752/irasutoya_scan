@@ -23,8 +23,10 @@ tag_separator: ",、／/|"
 
 # ---- 速度控制 ----
 politeness:
-  delay: 2.0                      # 每次請求之間至少間隔幾秒
+  delay: 2.0                      # 網頁請求之間至少間隔幾秒（網頁一律序列，不並行）
   jitter: 1.0                     # 再加 0~1 秒隨機抖動
+  image_concurrency: 10           # 圖片只讀檔頭量尺寸，可並行；同時最多幾張
+  image_delay: 0                  # 圖片請求之間的最小間隔（0 = 只靠並行數限制）
   timeout: 20
   retries: 3
   backoff: 2.0                    # 重試退避倍數（429/5xx 會尊重 Retry-After）

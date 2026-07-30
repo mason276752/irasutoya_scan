@@ -2,7 +2,7 @@
 name: irasutoya
 
 start_urls:
-  - "https://www.irasutoya.com/search?updated-max=2010-06-12T10:00:00%2B09:00&max-results=24&start=77&by-date=false"
+  - "https://www.irasutoya.com/search?updated-max=2010-06-12T10:00:00%2B09:00&max-results=100"
 
 allowed_domains:
   - irasutoya.com
@@ -11,8 +11,10 @@ allowed_domains:
 measure_size: always
 
 politeness:
-  delay: 1
+  delay: 2              # 網頁：序列，每次間隔 1 秒
   jitter: 0.5
+  image_concurrency: 10 # 圖片：同時最多 10 張
+  image_delay: 0
   timeout: 20
   retries: 3
   backoff: 2.0

@@ -120,8 +120,11 @@ class Detail:
 class Politeness:
     """爬蟲速度與禮貌設定。"""
 
-    delay: float = 2.0  # 每次請求之間至少間隔幾秒
+    delay: float = 2.0  # 網頁請求之間至少間隔幾秒
     jitter: float = 1.0  # 額外隨機延遲 0~jitter 秒
+    # 圖片只讀檔頭量尺寸，成本低，可以並行；網頁一律維持單執行緒序列
+    image_concurrency: int = 10  # 同時最多幾張圖
+    image_delay: float = 0.0  # 圖片請求之間的最小間隔（0 = 只靠並行數限制）
     timeout: float = 20.0
     retries: int = 3
     backoff: float = 2.0  # 重試退避倍數

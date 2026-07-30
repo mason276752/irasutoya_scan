@@ -40,16 +40,23 @@ python -m scraper export -d data/images.db --format csv --out out.csv
 
 ## 速度控制
 
-單執行緒，一次一個請求，不做並發。設定在 YAML 的 `politeness`：
+**網頁一律單執行緒序列**，一次一個請求；**圖片量測則可並行**（只讀檔頭、成本低）。
+設定在 YAML 的 `politeness`：
 
 | 參數 | 說明 |
 |---|---|
-| `delay` | 任兩次請求之間至少間隔幾秒 |
+| `delay` | 網頁請求之間至少間隔幾秒 |
 | `jitter` | 再加 0~jitter 秒隨機抖動 |
+| `image_concurrency` | 同時最多量測幾張圖（預設 10） |
+| `image_delay` | 圖片請求之間的最小間隔（預設 0，只靠並行數限制） |
 | `retries` / `backoff` | 失敗重試次數與指數退避；429/503 會尊重 `Retry-After` |
 | `respect_robots` | 是否遵守 robots.txt（預設 true） |
 
-命令列可用 `--delay` / `--jitter` 臨時覆寫。**圖片尺寸量測也走同一套限速**。
+命令列可用 `--delay` / `--jitter` 臨時覆寫網頁的間隔。
+
+量測批次是**以頁面為單位**收集的：一個詳細頁上的所有圖會一次打包並行量測。
+（設定檔常把「每張圖」寫成一個 `detail.item`，若在 item 層級量測，每次只有一張圖，
+並行等於沒開。）
 
 ## 設定檔
 
