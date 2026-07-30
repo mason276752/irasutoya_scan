@@ -104,6 +104,10 @@ GROUP BY i.id HAVING COUNT(DISTINCT t.name) = 2;
 - FTS5 的 trigram 分詞查不到**少於 3 個字元**的詞。`search -q` 遇到短查詢會自動改用 `LIKE`，
   但 `--raw`（直接寫 FTS5 語法）模式下短詞仍然查不到。
 - 重複執行時，同一張圖以 `(page_url, image_url)` 為鍵更新；標籤集合以最新一次抓取為準。
+- **同一個圖檔出現在多篇文章時，會存成多筆**（一頁一筆）。這是刻意的：唯一鍵含 `page_url`，
+  所以「這張圖在這篇文章裡叫什麼」會被完整保留。例如 `paint_hoka1_01_kuten.png` 同時在
+  平假名頁與片假名頁出現，兩筆的名稱分別是「ひらがなのペンキ文字『句点』」和
+  「カタカナのペンキ文字『句点』」。查相異圖檔用 `SELECT DISTINCT image_url FROM images`。
 
 ## 續爬與增量
 
