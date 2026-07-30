@@ -49,8 +49,12 @@ python -m scraper export -d data/images.db --format csv --out out.csv
 | `jitter` | 再加 0~jitter 秒隨機抖動 |
 | `image_concurrency` | 同時最多量測幾張圖（預設 10） |
 | `image_delay` | 圖片請求之間的最小間隔（預設 0，只靠並行數限制） |
-| `retries` / `backoff` | 失敗重試次數與指數退避；429/503 會尊重 `Retry-After` |
+| `retries` / `backoff` | 失敗重試次數與 5xx 的指數退避 |
+| `too_many_requests_wait` | 被 429 擋下時暫停多久（預設 60 秒） |
 | `respect_robots` | 是否遵守 robots.txt（預設 true） |
+
+**429 是全域冷卻**：任何一個請求收到 429，整條通道（含並行中的圖片執行緒）都會一起暫停，
+不是只讓撞到的那一個等。伺服器有給 `Retry-After` 時取兩者較大值。
 
 命令列可用 `--delay` / `--jitter` 臨時覆寫網頁的間隔。
 

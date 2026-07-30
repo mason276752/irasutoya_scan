@@ -37,17 +37,25 @@ class RateLimiter:
         self.delay = max(0.0, delay)
         self.jitter = max(0.0, jitter)
         self._last = 0.0
+        self._not_before = 0.0  # 冷卻結束的時間點
         self._lock = threading.Lock()
 
     def wait(self) -> None:
-        if not self.delay and not self.jitter:
+        if not self.delay and not self.jitter and not self._not_before:
             return
         with self._lock:
-            target = self.delay + random.uniform(0.0, self.jitter)
-            elapsed = time.monotonic() - self._last
-            if elapsed < target:
-                time.sleep(target - elapsed)
+            gap = self.delay + random.uniform(0.0, self.jitter)
+            # 兩個條件取晚的：距上次請求要夠久，且要等冷卻結束
+            target = max(self._last + gap, self._not_before)
+            now = time.monotonic()
+            if now < target:
+                time.sleep(target - now)
             self._last = time.monotonic()
+
+    def cooldown(self, seconds: float) -> None:
+        """全域暫停：所有使用這個限速器的執行緒都會等到冷卻結束。"""
+        with self._lock:
+            self._not_before = max(self._not_before, time.monotonic() + seconds)
 
 
 class Fetcher:
@@ -108,7 +116,7 @@ class Fetcher:
     def _request(
         self, method: str, url: str, limiter: RateLimiter | None = None, **kwargs
     ) -> requests.Response:
-        """帶重試與指數退避；429/503 會尊重 Retry-After。"""
+        """帶重試；429 觸發全域冷卻，5xx 用指數退避。兩者都尊重 Retry-After。"""
         limiter = limiter or self.limiter
         last_exc: Exception | None = None
         for attempt in range(self.p.retries + 1):
@@ -126,12 +134,22 @@ class Fetcher:
 
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
-                wait = float(retry_after) if (retry_after or "").isdigit() else self.p.backoff**attempt
+                server_wait = float(retry_after) if (retry_after or "").isdigit() else 0.0
                 last_exc = requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
-                if attempt < self.p.retries:
+                if attempt >= self.p.retries:
+                    break
+
+                if resp.status_code == 429:
+                    # 被限流：整條通道一起冷卻，並行中的請求也會停下來，
+                    # 不用自己 sleep —— 下一輪的 limiter.wait() 會等滿冷卻時間
+                    wait = max(server_wait, self.p.too_many_requests_wait)
+                    limiter.cooldown(wait)
+                    log.warning("HTTP 429（%s），暫停 %.0f 秒後重試", url, wait)
+                else:
+                    wait = server_wait or self.p.backoff**attempt
                     log.warning("HTTP %d（%s），%.1fs 後重試", resp.status_code, url, wait)
                     time.sleep(wait)
-                    continue
+                continue
 
             resp.raise_for_status()
             return resp

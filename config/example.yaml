@@ -29,7 +29,8 @@ politeness:
   image_delay: 0                  # 圖片請求之間的最小間隔（0 = 只靠並行數限制）
   timeout: 20
   retries: 3
-  backoff: 2.0                    # 重試退避倍數（429/5xx 會尊重 Retry-After）
+  backoff: 2.0                    # 5xx 的重試退避倍數
+  too_many_requests_wait: 60      # 被 429 擋下就整條通道暫停這麼久（含並行中的圖片）
   respect_robots: true
   user_agent: "Mozilla/5.0 (compatible; StockLibraryScan/0.1) metadata-only crawler"
   headers: {}                     # 需要額外標頭（例如 Referer）時加在這

@@ -127,7 +127,9 @@ class Politeness:
     image_delay: float = 0.0  # 圖片請求之間的最小間隔（0 = 只靠並行數限制）
     timeout: float = 20.0
     retries: int = 3
-    backoff: float = 2.0  # 重試退避倍數
+    backoff: float = 2.0  # 5xx 的重試退避倍數
+    # 被 429 擋下時暫停多久再試（秒）。這是全域冷卻，並行中的圖片請求也會一起停。
+    too_many_requests_wait: float = 60.0
     user_agent: str = (
         "Mozilla/5.0 (compatible; StockLibraryScan/0.1; +https://github.com/) "
         "metadata-only crawler"
