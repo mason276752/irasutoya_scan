@@ -11,14 +11,14 @@ allowed_domains:
 measure_size: always
 
 politeness:
-  delay: 5                    # 網頁：序列，每個 HTML 之間間隔 5 秒
+  delay: 6                    # 網頁：序列，每個 HTML 之間間隔 5 秒
   jitter: 0.5
   image_concurrency: 10       # 圖片：同時最多 10 張
   image_delay: 0
   timeout: 20
   retries: 3
   backoff: 3.0                # 5xx 的退避倍數
-  too_many_requests_wait: 60  # 被 429 擋下就整條通道暫停 1 分鐘
+  too_many_requests_wait: 62  # 被 429 擋下就整條通道暫停 1 分鐘
   respect_robots: true
 
 listing:
