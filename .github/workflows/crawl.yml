@@ -93,11 +93,16 @@ jobs:
         with:
           name: crawl-log-${{ github.run_number }}
           path: data/crawl.log
+          if-no-files-found: warn
           retention-days: 30
 
       - name: 把資料庫存回 repo
         if: ${{ !cancelled() }}
         run: |
+          if [ ! -f data/images.db ]; then
+            echo "沒有資料庫可提交（爬取可能在建立前就失敗了）"
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f data/images.db

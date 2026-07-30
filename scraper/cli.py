@@ -7,6 +7,7 @@ import csv
 import json
 import logging
 import sys
+from pathlib import Path
 
 from .config import SiteConfig
 from .crawl import Crawler
@@ -17,6 +18,8 @@ from .fetch import Fetcher
 def _setup_logging(verbose: bool, log_file: str | None = None) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     if log_file:  # CI 上把完整 log 留成檔案，方便當成 artifact 下載
+        # 全新的 checkout 還沒有 data/ 這種目錄，先建起來再開檔
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
