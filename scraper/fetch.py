@@ -29,6 +29,33 @@ class TimeBudgetExceeded(Exception):
 MAX_SIZE_PROBE_BYTES = 256 * 1024
 PROBE_CHUNK = 8 * 1024
 
+# 瀏覽器導覽網頁時會送的標頭。
+# 刻意不指定 Accept-Encoding —— 交給 requests 依實際安裝的解碼器決定，
+# 硬寫 br 而環境沒有 brotli 會拿到解不開的內容。
+PAGE_HEADERS = {
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Ch-Ua": '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+}
+
+# 瀏覽器載入 <img> 時送的標頭，跟導覽網頁不一樣
+IMAGE_HEADERS = {
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Sec-Ch-Ua": PAGE_HEADERS["Sec-Ch-Ua"],
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+}
+
 
 class RateLimiter:
     """確保任兩次請求之間至少間隔 delay 秒，另加 0~jitter 的隨機抖動。
@@ -61,8 +88,9 @@ class Fetcher:
         self.image_limiter = RateLimiter(politeness.image_delay)  # 圖片
         self._headers = {
             "User-Agent": politeness.user_agent,
-            "Accept-Language": "ja,zh-TW;q=0.9,en;q=0.8",
-            **politeness.headers,
+            "Accept-Language": politeness.accept_language,
+            **(PAGE_HEADERS if politeness.browser_headers else {}),
+            **politeness.headers,  # 設定檔的自訂標頭優先度最高
         }
         self._local = threading.local()  # 每個執行緒各自的 Session
         self._robots: dict[str, RobotFileParser | None] = {}
@@ -196,10 +224,29 @@ class Fetcher:
 
         raise last_exc or RuntimeError(f"無法取得 {url}")
 
-    def get_html(self, url: str) -> str:
+    def _fetch_site(self, url: str, referer: str | None) -> str:
+        """Sec-Fetch-Site：瀏覽器會依來源與目標的關係填不同的值。"""
+        if not referer:
+            return "none"
+        return (
+            "same-origin"
+            if urlparse(url).hostname == urlparse(referer).hostname
+            else "cross-site"
+        )
+
+    def _extra_headers(self, url: str, referer: str | None, image: bool) -> dict[str, str]:
+        if not self.p.browser_headers:
+            return {"Referer": referer} if referer else {}
+        headers = dict(IMAGE_HEADERS) if image else {}
+        headers["Sec-Fetch-Site"] = self._fetch_site(url, referer)
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    def get_html(self, url: str, referer: str | None = None) -> str:
         if not self.allowed(url):
             raise PermissionError(f"robots.txt 不允許抓取：{url}")
-        resp = self._request("GET", url)
+        resp = self._request("GET", url, headers=self._extra_headers(url, referer, image=False))
         # 讓 requests 依 HTML meta 猜編碼，避免日文頁被判成 ISO-8859-1
         if resp.encoding is None or resp.encoding.lower() == "iso-8859-1":
             resp.encoding = resp.apparent_encoding
@@ -227,7 +274,7 @@ class Fetcher:
         if not self.allowed(url):
             log.warning("robots.txt 不允許量測圖片：%s", url)
             return None
-        headers = {"Referer": referer} if referer else {}
+        headers = self._extra_headers(url, referer, image=True)
         try:
             resp = self._request(
                 "GET", url, limiter=self.image_limiter, headers=headers, stream=True

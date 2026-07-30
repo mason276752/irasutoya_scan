@@ -116,6 +116,17 @@ class Detail:
         )
 
 
+# 一般桌機 Chrome 的 User-Agent。維持與其他標頭一致很重要 ——
+# UA 說是 Chrome 卻少了 Sec-Fetch-* 這類標頭，反而比誠實的爬蟲 UA 更可疑。
+CHROME_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+
+# 誠實表明身分的版本，把 browser_headers 設成 false 時使用
+BOT_UA = "Mozilla/5.0 (compatible; StockLibraryScan/0.1) metadata-only crawler"
+
+
 @dataclass
 class Politeness:
     """爬蟲速度與禮貌設定。"""
@@ -130,12 +141,17 @@ class Politeness:
     backoff: float = 2.0  # 5xx 的重試退避倍數
     # 被 429 擋下時暫停多久再試（秒）。這是全域冷卻，並行中的圖片請求也會一起停。
     too_many_requests_wait: float = 60.0
-    user_agent: str = (
-        "Mozilla/5.0 (compatible; StockLibraryScan/0.1; +https://github.com/) "
-        "metadata-only crawler"
-    )
+    # 送出跟一般瀏覽器一致的標頭組合（Accept、Sec-Fetch-*、Referer 等）。
+    # 關掉的話會用 BOT_UA 並只送最基本的標頭。
+    browser_headers: bool = True
+    user_agent: str = ""  # 留空 = 依 browser_headers 自動選
+    accept_language: str = "ja,en-US;q=0.9,en;q=0.8"
     respect_robots: bool = True
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)  # 自訂標頭，優先度最高
+
+    def __post_init__(self) -> None:
+        if not self.user_agent:
+            self.user_agent = CHROME_UA if self.browser_headers else BOT_UA
 
     @classmethod
     def parse(cls, raw: Any) -> Politeness:

@@ -165,6 +165,7 @@ class Crawler:
         max_pages = pg.max_pages or 0
 
         cursor = None if self.restart else self.db.get_cursor(self.cfg.name, start_url)
+        prev: str | None = None  # 上一個列表頁，當作 Referer
 
         if pg.url_template:
             # 這個模式的游標存的是頁碼
@@ -179,11 +180,12 @@ class Crawler:
                 if max_pages and count >= max_pages:
                     return
                 url = pg.url_template.format(page=page)
-                soup = self._get_soup(url)
+                soup = self._get_soup(url, referer=prev)
                 if soup is None:
                     return
                 yield url, soup
                 self._save_cursor(start_url, str(page))
+                prev = url
                 page += pg.step
                 count += 1
             return
@@ -200,12 +202,14 @@ class Crawler:
             if url in seen:  # 「下一頁」指回自己就停
                 return
             seen.add(url)
-            soup = self._get_soup(url)
+            # 翻頁時帶上一頁當 Referer
+            soup = self._get_soup(url, referer=prev)
             if soup is None:
                 return
             yield url, soup
             # 這一頁的項目都處理完了才推進游標
             self._save_cursor(start_url, url)
+            prev = url
             count += 1
             url = self._next_page_url(soup, url) if pg.next_page else None
 
@@ -271,18 +275,19 @@ class Crawler:
             blank_streak = 0
             log.info("列表頁 %s → %d 個項目", page_url, len(links))
             for link in links:
-                self._crawl_detail(link)
+                self._crawl_detail(link, referer=page_url)
 
     # ---------- 詳細頁 ----------
 
-    def _crawl_detail(self, url: str) -> None:
+    def _crawl_detail(self, url: str, referer: str | None = None) -> None:
         self._check_budget()
         if not self.force and self.db.is_done(url):
             self.skipped += 1
             log.debug("已抓過，跳過：%s", url)
             return
 
-        soup = self._get_soup(url, record_state=True)
+        # 帶上列表頁當 Referer，跟瀏覽器從列表點進來一致
+        soup = self._get_soup(url, record_state=True, referer=referer)
         if soup is None:
             return
 
@@ -423,9 +428,11 @@ class Crawler:
 
     # ---------- 工具 ----------
 
-    def _get_soup(self, url: str, record_state: bool = False) -> BeautifulSoup | None:
+    def _get_soup(
+        self, url: str, record_state: bool = False, referer: str | None = None
+    ) -> BeautifulSoup | None:
         try:
-            html = self.fetcher.get_html(url)
+            html = self.fetcher.get_html(url, referer=referer)
         except TimeBudgetExceeded:
             # 收工訊號，不是這一頁的問題。要是被下面當成失敗記成 error，
             # 等於把「還沒處理」寫成「處理失敗」，進度記錄就不誠實了。

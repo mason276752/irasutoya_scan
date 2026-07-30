@@ -106,18 +106,27 @@ name:
 
 ## 資料庫
 
-標籤走正規化三表，所以標籤天然無序、不重複，多標籤查詢走索引：
+**一張圖一筆，以 `image_url` 為唯一鍵。** 同一個圖檔常出現在多篇文章，各篇給的名稱與
+說明不同，所以名稱／說明／來源頁跟標籤一樣是多值的：
 
 ```
-images(id, site, page_url, image_url, name, description,
-       width, height, published_at, fetched_at)   UNIQUE(page_url, image_url)
+images(id, site, image_url UNIQUE, width, height, published_at, fetched_at)
+image_sources(image_id, page_url, name, description, published_at)
+                                                  PRIMARY KEY(image_id, page_url)
 tags(id, name UNIQUE)
 image_tags(image_id, tag_id)                      + 反向索引 (tag_id, image_id)
 crawl_state(url, status, error, ...)              done / empty / error
 crawl_cursor(site, start_url, last_page_url)      翻頁進度
 ```
 
-`name` / `description` 另有 FTS5 全文索引（優先用 trigram 分詞，對中日文子字串搜尋友善）。
+**名稱、說明、來源頁是一組的**——同一張圖在 A 文章叫「ひらがなの…」配 A 的說明，在
+B 文章叫「カタカナの…」配 B 的說明，各自存成一筆 `image_sources`，不會互相覆蓋。
+
+- `images.published_at` 取各來源頁裡**最早**的日期
+- `images.width/height` 量不到時保留舊值，不會被 NULL 蓋掉
+- 標籤取**聯集**（只增不減）：一張圖的標籤是所有來源頁的總和，而且抽取失敗時
+  不該把既有標籤清空
+- FTS5 全文索引涵蓋該圖的**所有**名稱與說明（優先用 trigram 分詞，對中日文子字串搜尋友善）
 
 直接用 SQL 查也可以：
 
@@ -128,6 +137,16 @@ JOIN image_tags it ON it.image_id = i.id
 JOIN tags t ON t.id = it.tag_id
 WHERE t.name IN ('地図', 'リクエスト')
 GROUP BY i.id HAVING COUNT(DISTINCT t.name) = 2;
+
+-- 一張圖的所有名稱與說明（成對）
+SELECT s.name, s.description, s.page_url
+FROM image_sources s JOIN images i ON i.id = s.image_id
+WHERE i.image_url = ?;
+
+-- 出現在多篇文章的圖
+SELECT i.image_url, COUNT(*) AS n
+FROM images i JOIN image_sources s ON s.image_id = i.id
+GROUP BY i.id HAVING n > 1;
 ```
 
 ### 已知限制
@@ -135,10 +154,8 @@ GROUP BY i.id HAVING COUNT(DISTINCT t.name) = 2;
 - FTS5 的 trigram 分詞查不到**少於 3 個字元**的詞。`search -q` 遇到短查詢會自動改用 `LIKE`，
   但 `--raw`（直接寫 FTS5 語法）模式下短詞仍然查不到。
 - 重複執行時，同一張圖以 `(page_url, image_url)` 為鍵更新；標籤集合以最新一次抓取為準。
-- **同一個圖檔出現在多篇文章時，會存成多筆**（一頁一筆）。這是刻意的：唯一鍵含 `page_url`，
-  所以「這張圖在這篇文章裡叫什麼」會被完整保留。例如 `paint_hoka1_01_kuten.png` 同時在
-  平假名頁與片假名頁出現，兩筆的名稱分別是「ひらがなのペンキ文字『句点』」和
-  「カタカナのペンキ文字『句点』」。查相異圖檔用 `SELECT DISTINCT image_url FROM images`。
+- 標籤取聯集、只增不減，所以站方**移除**某個標籤時不會同步。這是刻意的取捨：抽取失敗
+  （版型變動、頁面殘缺）比標籤真的被拿掉常見得多，清空是不可逆的資料遺失。
 
 ## 續爬與增量
 
