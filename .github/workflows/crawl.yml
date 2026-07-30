@@ -19,6 +19,8 @@ on:
 permissions:
   contents: write
   actions: read
+  pages: write        # 部署 GitHub Pages
+  id-token: write     # Pages 部署用的 OIDC
 
 jobs:
   # 已經有一個 run 在跑就直接跳過這次（不排隊、不重複執行）
@@ -95,6 +97,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: python -m scraper stats -d data/images.db
 
+      # Pages 只放看圖需要的檔案，不上傳資料庫與 log
+      - name: 準備 Pages 內容
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p site
+          cp data/index.html  site/index.html
+          cp data/images.json site/images.json
+          cp data/images.csv  site/images.csv
+          ls -lh site/
+
+      - name: 上傳 Pages artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
       - name: 上傳 log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -121,3 +139,19 @@ jobs:
             git pull --rebase --autostash
             git push
           fi
+
+  # 把看圖頁發布到 GitHub Pages
+  deploy-pages:
+    needs: crawl
+    if: ${{ !cancelled() && needs.crawl.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # 同時只允許一個部署
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
