@@ -172,30 +172,31 @@ class Database:
 
     def _set_tags(self, image_id: int, tags: Iterable[str]) -> None:
         clean = sorted({t.strip() for t in tags if t and t.strip()})
-        if clean:
-            self.conn.executemany(
-                "INSERT OR IGNORE INTO tags (name) VALUES (?)", [(t,) for t in clean]
-            )
-            rows = self.conn.execute(
-                f"SELECT id FROM tags WHERE name IN ({','.join('?' * len(clean))})", clean
-            ).fetchall()
-            tag_ids = [r["id"] for r in rows]
-        else:
-            tag_ids = []
+        if not clean:
+            # 這次抽不到標籤時保留既有的，不要清空。
+            # 「抽取失敗」（版型變動、頁面殘缺、重試時的暫時性問題）遠比
+            # 「標籤真的被站方拿掉」常見，清空是不可逆的資料遺失。
+            # 代價是站方真的移除標籤時不會同步，這個取捨偏向不遺失。
+            return
+
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO tags (name) VALUES (?)", [(t,) for t in clean]
+        )
+        rows = self.conn.execute(
+            f"SELECT id FROM tags WHERE name IN ({','.join('?' * len(clean))})", clean
+        ).fetchall()
+        tag_ids = [r["id"] for r in rows]
 
         # 先刪掉這次不再出現的關聯，再補上新的（標籤集合以最新一次抓取為準）
-        if tag_ids:
-            self.conn.execute(
-                f"DELETE FROM image_tags WHERE image_id = ? "
-                f"AND tag_id NOT IN ({','.join('?' * len(tag_ids))})",
-                [image_id, *tag_ids],
-            )
-            self.conn.executemany(
-                "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
-                [(image_id, tid) for tid in tag_ids],
-            )
-        else:
-            self.conn.execute("DELETE FROM image_tags WHERE image_id = ?", (image_id,))
+        self.conn.execute(
+            f"DELETE FROM image_tags WHERE image_id = ? "
+            f"AND tag_id NOT IN ({','.join('?' * len(tag_ids))})",
+            [image_id, *tag_ids],
+        )
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
+            [(image_id, tid) for tid in tag_ids],
+        )
 
     def mark(self, url: str, site: str, status: str, error: str | None = None) -> None:
         self.conn.execute(

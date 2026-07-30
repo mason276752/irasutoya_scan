@@ -21,6 +21,10 @@ from .config import Politeness
 
 log = logging.getLogger(__name__)
 
+
+class TimeBudgetExceeded(Exception):
+    """等待 429 冷卻的過程中超出時間預算，必須乾淨收工而不是睡完。"""
+
 # 量測尺寸時最多讀這麼多位元組就放棄，避免整張圖被拉下來
 MAX_SIZE_PROBE_BYTES = 256 * 1024
 PROBE_CHUNK = 8 * 1024
@@ -68,6 +72,9 @@ class Fetcher:
         # 但不該波及其他主機（例如圖片放在另一個 CDN 的情況）。
         self._cooldown: dict[str, float] = {}
         self._cooldown_lock = threading.Lock()
+        # 由 Crawler 設定的收工時間點（time.monotonic 基準）。
+        # 冷卻動輒一分鐘起跳，等待期間必須看得到時間上限，否則會遠遠超時。
+        self.deadline: float | None = None
 
     @property
     def session(self) -> requests.Session:
@@ -117,7 +124,11 @@ class Fetcher:
             self._cooldown[host] = until
 
     def wait_cooldown(self, url: str) -> None:
-        """這台主機若在冷卻中就等到結束；分段睡，避免關機時卡住太久。"""
+        """這台主機若在冷卻中就等到結束。
+
+        分段睡，好讓等待中途也能察覺時間上限已到 —— 冷卻可能長達一分鐘，
+        睡完才發現超時的話，收工時間會嚴重失準。
+        """
         host = urlparse(url).hostname or ""
         while True:
             with self._cooldown_lock:
@@ -125,7 +136,11 @@ class Fetcher:
             remain = until - time.monotonic()
             if remain <= 0:
                 return
-            time.sleep(min(remain, 2.0))
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                raise TimeBudgetExceeded(
+                    f"等待 {host} 的 429 冷卻（還要 {remain:.0f} 秒）期間已達時間上限"
+                )
+            time.sleep(min(remain, 1.0))
 
     # ---------- 請求 ----------
 
@@ -153,22 +168,27 @@ class Fetcher:
                 retry_after = resp.headers.get("Retry-After")
                 server_wait = float(retry_after) if (retry_after or "").isdigit() else 0.0
                 last_exc = requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
-                if attempt >= self.p.retries:
-                    break
 
                 if resp.status_code == 429:
                     # 被限流：讓整台主機冷卻，網頁與並行中的圖片請求都會停下來。
-                    # 不用自己 sleep —— 下一輪開頭的 wait_cooldown 會等滿
+                    # 冷卻要在放棄重試之前就設好 —— 這一個請求就算不再重試，
+                    # 其他執行緒和後續請求仍然必須受到保護。
                     wait = max(server_wait, self.p.too_many_requests_wait)
                     self.set_cooldown(url, wait)
                     log.warning(
-                        "HTTP 429（%s），%s 全站暫停 %.0f 秒後重試",
+                        "HTTP 429（%s），%s 全站暫停 %.0f 秒",
                         url, urlparse(url).hostname, wait,
                     )
-                else:
-                    wait = server_wait or self.p.backoff**attempt
-                    log.warning("HTTP %d（%s），%.1fs 後重試", resp.status_code, url, wait)
-                    time.sleep(wait)
+                    if attempt >= self.p.retries:
+                        break
+                    # 不用自己 sleep —— 下一輪開頭的 wait_cooldown 會等滿
+                    continue
+
+                if attempt >= self.p.retries:
+                    break
+                wait = server_wait or self.p.backoff**attempt
+                log.warning("HTTP %d（%s），%.1fs 後重試", resp.status_code, url, wait)
+                time.sleep(wait)
                 continue
 
             resp.raise_for_status()
@@ -212,6 +232,8 @@ class Fetcher:
             resp = self._request(
                 "GET", url, limiter=self.image_limiter, headers=headers, stream=True
             )
+        except TimeBudgetExceeded:
+            raise  # 收工訊號不能被當成「這張圖量不到」吞掉
         except Exception as exc:
             log.warning("量測尺寸失敗（%s）：%s", url, exc)
             return None

@@ -35,6 +35,8 @@ python -m scraper stats  -d data/images.db      # 統計
 python -m scraper tags   -d data/images.db      # 標籤排行
 python -m scraper errors -d data/images.db      # 列出失敗頁面（--status empty 看無圖片的頁）
 python -m scraper retry  -c config/irasutoya.yaml -d data/images.db   # 重跑失敗頁面
+python -m scraper retry  -c config/irasutoya.yaml -d data/images.db --status empty  # 複查沒抓到圖的頁
+python -m scraper remeasure -c config/irasutoya.yaml -d data/images.db  # 補量缺尺寸的圖
 python -m scraper export -d data/images.db --format csv --out out.csv
 
 # 匯出 + 看圖頁

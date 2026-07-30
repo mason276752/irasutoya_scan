@@ -12,13 +12,19 @@ from bs4 import BeautifulSoup
 from .config import SiteConfig
 from .db import Database, ImageRecord
 from .extract import extract_item, extract_links, parse_html
-from .fetch import Fetcher
+from .fetch import Fetcher, TimeBudgetExceeded
 
 log = logging.getLogger(__name__)
 
 
 class _Budget(Exception):
     """達到筆數上限或時間上限時，用來乾淨地中止整趟爬取（進度已存好）。"""
+
+
+# 列表頁偶爾會抽不到項目（頁面殘缺、站方臨時異常）。只有連續這麼多頁都抽不到，
+# 才認定是抽取規則壞了而停下來；否則單一異常頁會讓游標永遠卡在那裡，
+# 後面的頁面再也走不到。
+EMPTY_LISTING_TOLERANCE = 3
 
 
 def _as_list(value: Any) -> list[str]:
@@ -70,6 +76,8 @@ class Crawler:
         self.dry_run = dry_run
         self.restart = restart
         self.deadline = time.monotonic() + max_runtime if max_runtime else None
+        # 讓取得層在等待 429 冷卻時也看得到收工時間
+        self.fetcher.deadline = self.deadline
         self.saved = 0
         self.skipped = 0
         self.errors = 0
@@ -82,7 +90,7 @@ class Crawler:
         try:
             for start in self.cfg.start_urls:
                 self._crawl_listing(start)
-        except _Budget as exc:
+        except (_Budget, TimeBudgetExceeded) as exc:
             log.info("%s，進度已保存，下次執行會從中斷處繼續", exc)
         except KeyboardInterrupt:
             log.warning("使用者中斷，保存已抓到的資料")
@@ -96,7 +104,7 @@ class Crawler:
         try:
             for url in urls:
                 self._crawl_detail(url)
-        except _Budget as exc:
+        except (_Budget, TimeBudgetExceeded) as exc:
             log.info("%s", exc)
         except KeyboardInterrupt:
             log.warning("使用者中斷")
@@ -217,14 +225,23 @@ class Crawler:
 
     def _crawl_listing(self, start_url: str) -> None:
         listing = self.cfg.listing
+        blank_streak = 0  # 連續幾頁抽不到東西
 
         for page_url, soup in self._listing_pages(start_url):
             if listing.fields_on_listing:
                 # 列表頁上就有全部欄位，不必進詳細頁
                 roots = soup.select(listing.item) if listing.item else [soup]
                 if not roots:
-                    log.info("列表頁沒有項目，停止：%s", page_url)
-                    return
+                    blank_streak += 1
+                    if blank_streak >= EMPTY_LISTING_TOLERANCE:
+                        log.warning(
+                            "連續 %d 頁抽不到項目，停止翻頁（抽取規則可能失效）：%s",
+                            blank_streak, page_url,
+                        )
+                        return
+                    log.warning("列表頁沒有項目，先跳過繼續翻：%s", page_url)
+                    continue
+                blank_streak = 0
                 self._process_items(page_url, roots, soup, label="列表頁項目")
                 continue
 
@@ -241,9 +258,17 @@ class Crawler:
                         links.append(link)
 
             if not links:
-                log.info("列表頁抽不到項目連結，停止翻頁：%s", page_url)
-                return
+                blank_streak += 1
+                if blank_streak >= EMPTY_LISTING_TOLERANCE:
+                    log.warning(
+                        "連續 %d 頁抽不到項目連結，停止翻頁（抽取規則可能失效）：%s",
+                        blank_streak, page_url,
+                    )
+                    return
+                log.warning("列表頁抽不到項目連結，先跳過繼續翻：%s", page_url)
+                continue
 
+            blank_streak = 0
             log.info("列表頁 %s → %d 個項目", page_url, len(links))
             for link in links:
                 self._crawl_detail(link)
@@ -401,6 +426,10 @@ class Crawler:
     def _get_soup(self, url: str, record_state: bool = False) -> BeautifulSoup | None:
         try:
             html = self.fetcher.get_html(url)
+        except TimeBudgetExceeded:
+            # 收工訊號，不是這一頁的問題。要是被下面當成失敗記成 error，
+            # 等於把「還沒處理」寫成「處理失敗」，進度記錄就不誠實了。
+            raise
         except Exception as exc:
             self.errors += 1
             self.failed.append((url, f"{type(exc).__name__}: {exc}"))

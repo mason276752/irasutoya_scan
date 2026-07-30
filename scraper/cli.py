@@ -7,12 +7,13 @@ import csv
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 from .config import SiteConfig
 from .crawl import Crawler
 from .db import Database
-from .fetch import Fetcher
+from .fetch import Fetcher, TimeBudgetExceeded
 
 
 def _setup_logging(verbose: bool, log_file: str | None = None) -> None:
@@ -108,6 +109,8 @@ def cmd_remeasure(args: argparse.Namespace) -> int:
 
     logging.info("補量 %d 張圖的尺寸", len(rows))
     fetcher = Fetcher(cfg.politeness)
+    if args.max_runtime:  # 沒有上限的話，一連串 429 冷卻會讓這一步拖很久
+        fetcher.deadline = time.monotonic() + args.max_runtime
     fixed = failed = 0
     # 依來源頁分組，Referer 才能帶對
     by_page: dict[str, list[dict]] = {}
@@ -115,7 +118,11 @@ def cmd_remeasure(args: argparse.Namespace) -> int:
         by_page.setdefault(row["page_url"], []).append(row)
 
     for page_url, items in by_page.items():
-        sizes = fetcher.image_sizes([i["image_url"] for i in items], referer=page_url)
+        try:
+            sizes = fetcher.image_sizes([i["image_url"] for i in items], referer=page_url)
+        except TimeBudgetExceeded as exc:
+            logging.info("%s，已補的先保留，其餘下次再補", exc)
+            break
         for item in items:
             size = sizes.get(item["image_url"])
             if size:
@@ -275,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("-c", "--config", required=True)
     rm.add_argument("-d", "--db", default="data/images.db")
     rm.add_argument("--limit", type=int, default=0, help="這次最多補幾張")
+    rm.add_argument("--max-runtime", type=float, default=None,
+                    help="跑滿幾秒就收工（已補的會保留）")
     rm.add_argument("--log-file")
     rm.set_defaults(func=cmd_remeasure)
 
