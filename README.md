@@ -36,6 +36,24 @@ python -m scraper tags   -d data/images.db      # 標籤排行
 python -m scraper errors -d data/images.db      # 列出失敗頁面（--status empty 看無圖片的頁）
 python -m scraper retry  -c config/irasutoya.yaml -d data/images.db   # 重跑失敗頁面
 python -m scraper export -d data/images.db --format csv --out out.csv
+
+# 匯出 + 看圖頁
+python -m scraper export -d data/images.db --format json --out data/images.json
+python -m scraper viewer -d data/images.db --out data/index.html
+cd data && python -m http.server 8080     # 開 http://localhost:8080
+```
+
+## 看圖頁
+
+`viewer` 產生的 `index.html` 會讀同目錄的 `images.json`，提供縮圖牆、關鍵字搜尋、
+標籤篩選（可多選，全部符合／任一符合切換）、依日期或尺寸排序，並支援深色模式。
+
+因為瀏覽器的安全限制，用 `file://` 直接開啟時讀不到 `images.json`，這時頁面會提示你
+起一個本機服務，或直接用頁面上的檔案選擇器手動載入 JSON。想要單一檔案就能開，
+改用 `--embed` 把資料嵌進 HTML：
+
+```bash
+python -m scraper viewer -d data/images.db --out viewer.html --embed
 ```
 
 ## 速度控制

@@ -174,6 +174,26 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_viewer(args: argparse.Namespace) -> int:
+    """產生一頁式的圖片檢視器，資料讀同目錄的 images.json。"""
+    template = Path(__file__).parent / "viewer.html"
+    html = template.read_text(encoding="utf-8")
+
+    if args.embed:  # 把資料直接嵌進去，單一檔案就能用 file:// 開啟
+        db = Database(args.db)
+        rows = db.search(limit=10**9)
+        db.close()
+        payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        html = html.replace("/*__EMBEDDED_DATA__*/", f"window.__IMAGES__ = {payload};")
+        logging.info("已內嵌 %d 筆資料", len(rows))
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    logging.info("已產生 %s", out)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="scraper", description="通用 HTML 圖片 metadata 爬蟲")
     p.add_argument("-v", "--verbose", action="store_true", help="輸出除錯訊息")
@@ -239,6 +259,13 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", help="輸出檔案（預設印到 stdout）")
     e.add_argument("--limit", type=int, default=0)
     e.set_defaults(func=cmd_export)
+
+    v = sub.add_parser("viewer", help="產生看圖用的 HTML（讀同目錄的 images.json）")
+    v.add_argument("-d", "--db", default="data/images.db")
+    v.add_argument("--out", default="data/index.html")
+    v.add_argument("--embed", action="store_true",
+                   help="把資料內嵌進 HTML，單一檔案即可用 file:// 開啟")
+    v.set_defaults(func=cmd_viewer)
 
     return p
 
