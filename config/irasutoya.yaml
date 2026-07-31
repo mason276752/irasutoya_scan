@@ -19,7 +19,7 @@ politeness:
   retries: 3
   backoff: 3.0                # 5xx 的退避倍數
   too_many_requests_wait: 62  # 被 429 擋下就整條通道暫停 1 分鐘
-  respect_robots: true
+  respect_robots: false
 
 listing:
   item_link: "#Blog1 div.boxim a"

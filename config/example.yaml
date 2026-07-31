@@ -31,7 +31,7 @@ politeness:
   retries: 3
   backoff: 2.0                    # 5xx 的重試退避倍數
   too_many_requests_wait: 60      # 被 429 擋下就整條通道暫停這麼久（含並行中的圖片）
-  respect_robots: true
+  respect_robots: false
   user_agent: "Mozilla/5.0 (compatible; StockLibraryScan/0.1) metadata-only crawler"
   headers: {}                     # 需要額外標頭（例如 Referer）時加在這
 

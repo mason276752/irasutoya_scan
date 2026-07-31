@@ -146,7 +146,7 @@ class Politeness:
     browser_headers: bool = True
     user_agent: str = ""  # 留空 = 依 browser_headers 自動選
     accept_language: str = "ja,en-US;q=0.9,en;q=0.8"
-    respect_robots: bool = True
+    respect_robots: bool = False
     headers: dict[str, str] = field(default_factory=dict)  # 自訂標頭，優先度最高
 
     def __post_init__(self) -> None:
