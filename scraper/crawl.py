@@ -273,15 +273,39 @@ class Crawler:
                 continue
 
             blank_streak = 0
-            log.info("列表頁 %s → %d 個項目", page_url, len(links))
+
+            # 先分流，好讓 log 說清楚這一頁到底有沒有事情要做 ——
+            # 只印「N 個項目」的話，整頁都已抓過時看起來像卡住了
+            pending: list[str] = []
+            done_here = 0
             for link in links:
-                self._crawl_detail(link, referer=page_url)
+                if not self.force and self.db.is_done(link):
+                    done_here += 1
+                else:
+                    pending.append(link)
+            self.skipped += done_here
+
+            if pending:
+                log.info(
+                    "列表頁 %s → %d 個項目（%d 個要爬，%d 個已抓過）",
+                    page_url, len(links), len(pending), done_here,
+                )
+            else:
+                log.info(
+                    "列表頁 %s → %d 個項目全部抓過，直接翻下一頁", page_url, len(links)
+                )
+
+            for link in pending:
+                self._crawl_detail(link, referer=page_url, check_done=False)
 
     # ---------- 詳細頁 ----------
 
-    def _crawl_detail(self, url: str, referer: str | None = None) -> None:
+    def _crawl_detail(
+        self, url: str, referer: str | None = None, check_done: bool = True
+    ) -> None:
         self._check_budget()
-        if not self.force and self.db.is_done(url):
+        # 從列表頁進來的已經篩選過了，不用再查一次（也避免 skipped 重複計數）
+        if check_done and not self.force and self.db.is_done(url):
             self.skipped += 1
             log.debug("已抓過，跳過：%s", url)
             return

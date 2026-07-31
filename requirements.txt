@@ -1,4 +1,6 @@
-requests>=2.32
+# brotli 讓 Accept-Encoding 跟真實瀏覽器一致（gzip, deflate, br, zstd）
+requests[brotli]>=2.32
+zstandard>=0.23
 beautifulsoup4>=4.12
 lxml>=5.2
 soupsieve>=2.5

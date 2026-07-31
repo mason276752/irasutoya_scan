@@ -46,14 +46,18 @@ PAGE_HEADERS = {
     "Sec-Fetch-User": "?1",
 }
 
-# 瀏覽器載入 <img> 時送的標頭，跟導覽網頁不一樣
-IMAGE_HEADERS = {
+# 瀏覽器載入 <img> 時送的標頭，跟導覽網頁不一樣。
+# 值為 None 的會把 session 上的同名標頭移除 —— 子資源請求不帶
+# Sec-Fetch-User 與 Upgrade-Insecure-Requests，留著反而露餡。
+IMAGE_HEADERS: dict[str, str | None] = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Sec-Ch-Ua": PAGE_HEADERS["Sec-Ch-Ua"],
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"macOS"',
     "Sec-Fetch-Dest": "image",
     "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-User": None,
+    "Upgrade-Insecure-Requests": None,
 }
 
 
@@ -234,10 +238,12 @@ class Fetcher:
             else "cross-site"
         )
 
-    def _extra_headers(self, url: str, referer: str | None, image: bool) -> dict[str, str]:
+    def _extra_headers(
+        self, url: str, referer: str | None, image: bool
+    ) -> dict[str, str | None]:
         if not self.p.browser_headers:
             return {"Referer": referer} if referer else {}
-        headers = dict(IMAGE_HEADERS) if image else {}
+        headers: dict[str, str | None] = dict(IMAGE_HEADERS) if image else {}
         headers["Sec-Fetch-Site"] = self._fetch_site(url, referer)
         if referer:
             headers["Referer"] = referer
