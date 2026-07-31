@@ -144,7 +144,7 @@ class Fetcher:
             log.info("已載入 robots.txt：%s", url)
             return rp
         except requests.RequestException as exc:
-            log.warning("讀不到 robots.txt（%s）：%s", url, exc)
+            log.warning("讀不到 robots.txt（  %s  ）：%s", url, exc)
             return None
 
     # ---------- 429 冷卻（以 host 為單位）----------
@@ -192,7 +192,7 @@ class Fetcher:
             except requests.RequestException as exc:
                 last_exc = exc
                 wait = self.p.backoff**attempt
-                log.warning("請求失敗（%s）第 %d 次：%s，%.1fs 後重試", url, attempt + 1, exc, wait)
+                log.warning("請求失敗（  %s  ）第 %d 次：%s，%.1fs 後重試", url, attempt + 1, exc, wait)
                 time.sleep(wait)
                 continue
 
@@ -208,7 +208,7 @@ class Fetcher:
                     wait = max(server_wait, self.p.too_many_requests_wait)
                     self.set_cooldown(url, wait)
                     log.warning(
-                        "HTTP 429（%s），%s 全站暫停 %.0f 秒",
+                        "HTTP 429（ %s ），%s 全站暫停 %.0f 秒",
                         url, urlparse(url).hostname, wait,
                     )
                     if attempt >= self.p.retries:
@@ -219,7 +219,7 @@ class Fetcher:
                 if attempt >= self.p.retries:
                     break
                 wait = server_wait or self.p.backoff**attempt
-                log.warning("HTTP %d（%s），%.1fs 後重試", resp.status_code, url, wait)
+                log.warning("HTTP %d（ %s ），%.1fs 後重試", resp.status_code, url, wait)
                 time.sleep(wait)
                 continue
 
@@ -288,7 +288,7 @@ class Fetcher:
         except TimeBudgetExceeded:
             raise  # 收工訊號不能被當成「這張圖量不到」吞掉
         except Exception as exc:
-            log.warning("量測尺寸失敗（%s）：%s", url, exc)
+            log.warning("量測尺寸失敗（  %s  ）：%s", url, exc)
             return None
 
         parser = ImageFile.Parser()
@@ -305,7 +305,7 @@ class Fetcher:
                     log.warning("讀了 %d bytes 仍判不出尺寸：%s", len(buf), url)
                     return None
         except Exception as exc:
-            log.warning("解析圖片失敗（%s）：%s", url, exc)
+            log.warning("解析圖片失敗（  %s  ）：%s", url, exc)
             return None
         finally:
             resp.close()

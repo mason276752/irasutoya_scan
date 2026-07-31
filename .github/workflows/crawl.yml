@@ -3,7 +3,7 @@ name: crawl
 on:
   schedule:
     # 每週日 02:00（台北，UTC+8）＝ 每週六 18:00 UTC
-    - cron: "0 18 * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       config:
