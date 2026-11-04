@@ -1,5 +1,38 @@
 [
   {
+    "id": 34461,
+    "site": "irasutoya",
+    "image_url": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg-eXo1gvw_3XfSzYUBLdnP2aaKa2yaHghUDvwjdHnN_4N4MxtVQ0insq62jhhH0FWkKGLUp6Zfe9tYJHG9XXsHhtQFT_tGQRcv1RwRU0eA6x9Wi0kSdYAAE75ZUd2BbjYGDBi8uUNahyoiqG8VDX1ODszAo_88fIvHFnVbWURQYz71IG9mNW0Th9vW-GvL/s1224/money_toushi_oinori.png",
+    "width": 1224,
+    "height": 1164,
+    "published_at": "2026-11-04",
+    "fetched_at": "2026-11-04T13:26:12+00:00",
+    "sources": [
+      {
+        "page_url": "https://www.irasutoya.com/2026/11/blog-post.html",
+        "name": "お祈り投資法のイラスト",
+        "description": "神頼みで投資をするトレーダーのイラストです。",
+        "published_at": "2026-11-04"
+      }
+    ],
+    "names": [
+      "お祈り投資法のイラスト"
+    ],
+    "descriptions": [
+      "神頼みで投資をするトレーダーのイラストです。"
+    ],
+    "page_urls": [
+      "https://www.irasutoya.com/2026/11/blog-post.html"
+    ],
+    "name": "お祈り投資法のイラスト",
+    "description": "神頼みで投資をするトレーダーのイラストです。",
+    "page_url": "https://www.irasutoya.com/2026/11/blog-post.html",
+    "tags": [
+      "お金",
+      "宗教"
+    ]
+  },
+  {
     "id": 34460,
     "site": "irasutoya",
     "image_url": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg3TfbA6HSLNp95X4QgYd7AxAK9C1NsNOE7v1dOzYV7GPGkq4m-tqtaQ8Dl-WgRtgkw3AI0HUbiDrSzYxfAcEEpbby998Qm_PFDJJsAOZJjjJ_emYT_SnrbLa0MujNM3FIEH6_SzNjbzidGMgROxrLY17SUjPmMSmrut9njmKqcnKWEbr-6UZQpGsYaBp8e/s1000/friends_frienemy_man.png",
